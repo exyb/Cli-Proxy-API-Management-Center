@@ -62,6 +62,14 @@ export default defineConfig({
       }
     }
   },
+  server: {
+    proxy: {
+      '/v0/management': {
+        target: 'http://localhost:8317',
+        changeOrigin: true,
+      }
+    }
+  },
   build: {
     target: 'es2020',
     outDir: 'dist',

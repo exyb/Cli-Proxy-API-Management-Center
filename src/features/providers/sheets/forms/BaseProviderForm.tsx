@@ -10,6 +10,7 @@ import {
   IconPlus,
   IconX,
 } from '@/components/ui/icons';
+import { maskApiKey } from '@/utils/format';
 import { Collapsible } from '@/components/ui/Collapsible';
 import { Select } from '@/components/ui/Select';
 import { hasDisableAllModelsRule } from '@/components/providers/utils';
@@ -125,7 +126,7 @@ function buildInitialForm(
       testModel: cfg.testModel ?? '',
       apiKeyEntries: cfg.apiKeyEntries?.length
         ? cfg.apiKeyEntries.map((entry) => ({
-            apiKey: '',
+            apiKey: entry.apiKey ? maskApiKey(entry.apiKey) : '',
             existingApiKey: entry.apiKey,
             proxyUrl: entry.proxyUrl ?? '',
             authIndex: entry.authIndex,
@@ -138,11 +139,9 @@ function buildInitialForm(
   const disabled = hasDisableAllModelsRule(cfg.excludedModels);
   const excludedList = stripDisableAllRule(cfg.excludedModels);
   return {
-    // Keep the API key blank in edit mode. Pre-filling the real key makes this
-    // password field a browser-autofill target (the saved management key can
-    // overwrite it) and defeats the "leave empty = keep unchanged" contract; an
-    // empty field is preserved on save via buildProviderKeyConfig's existing fallback.
-    apiKey: '',
+    // Show masked API key in edit mode. Users can see a preview (first 2 + last 2 chars)
+    // and toggle visibility with the eye button. Empty field means "keep unchanged" on save.
+    apiKey: cfg.apiKey ? maskApiKey(cfg.apiKey) : '',
     name: '',
     baseUrl: cfg.baseUrl ?? '',
     proxyUrl: cfg.proxyUrl ?? '',
@@ -226,14 +225,34 @@ export function BaseProviderForm({
   const [error, setError] = useState<string | null>(null);
   const [showPasswords, setShowPasswords] = useState<Set<number>>(new Set());
   const [showSingleApiKey, setShowSingleApiKey] = useState(false);
+  // Store the original API key for edit mode to support toggling visibility
+  const [originalApiKey] = useState<string | null>(() => {
+    if (mode !== 'edit' || !resource) return null;
+    const raw = resource.raw as { apiKey?: string } | undefined;
+    return raw?.apiKey ?? null;
+  });
 
   const togglePasswordVisibility = (idx: number) => {
     setShowPasswords((prev) => {
       const next = new Set(prev);
-      if (next.has(idx)) {
+      const wasVisible = next.has(idx);
+      if (wasVisible) {
         next.delete(idx);
       } else {
         next.add(idx);
+      }
+      // Toggle between masked preview and full API key for OpenAI entries
+      if (brand === 'openaiCompatibility' && mode === 'edit') {
+        const entry = apiKeyEntries[idx];
+        if (entry?.existingApiKey) {
+          const maskedKey = maskApiKey(entry.existingApiKey);
+          setForm((prev) => ({
+            ...prev,
+            apiKeyEntries: apiKeyEntries.map((it, i) =>
+              i === idx ? { ...it, apiKey: wasVisible ? maskedKey : (entry.existingApiKey ?? '') } : it
+            ),
+          }));
+        }
       }
       return next;
     });
@@ -422,7 +441,34 @@ export function BaseProviderForm({
     }
     try {
       setError(null);
-      await onSubmit(form);
+      // In edit mode, if apiKey is still the masked preview, send empty string (no change)
+      let submitForm = { ...form };
+      if (mode === 'edit') {
+        // Handle single apiKey (non-OpenAI)
+        if (originalApiKey) {
+          const maskedKey = maskApiKey(originalApiKey);
+          if (form.apiKey === maskedKey) {
+            submitForm = { ...submitForm, apiKey: '' };
+          }
+        }
+        // Handle OpenAI apiKeyEntries
+        if (brand === 'openaiCompatibility' && form.apiKeyEntries) {
+          submitForm = {
+            ...submitForm,
+            apiKeyEntries: form.apiKeyEntries.map((entry) => {
+              if (entry.existingApiKey) {
+                const maskedKey = maskApiKey(entry.existingApiKey);
+                if (entry.apiKey === maskedKey) {
+                  // Still masked - send original key to preserve it
+                  return { ...entry, apiKey: entry.existingApiKey };
+                }
+              }
+              return entry;
+            }),
+          };
+        }
+      }
+      await onSubmit(submitForm);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -520,7 +566,7 @@ export function BaseProviderForm({
               <input
                 id={`${fid}-apiKey`}
                 className={styles.passwordInput}
-                type={showSingleApiKey ? 'text' : 'password'}
+                type="text"
                 value={form.apiKey}
                 onChange={(e) => updateField('apiKey', e.target.value)}
                 autoComplete="new-password"
@@ -537,7 +583,17 @@ export function BaseProviderForm({
               <button
                 type="button"
                 className={styles.passwordToggle}
-                onClick={() => setShowSingleApiKey((v) => !v)}
+                onClick={() => {
+                  setShowSingleApiKey((v) => !v);
+                  // Toggle between masked preview and full API key
+                  if (mode === 'edit' && originalApiKey) {
+                    const maskedKey = maskApiKey(originalApiKey);
+                    setForm((prev) => ({
+                      ...prev,
+                      apiKey: showSingleApiKey ? maskedKey : originalApiKey,
+                    }));
+                  }
+                }}
                 disabled={mutating}
                 aria-label={
                   showSingleApiKey
@@ -805,7 +861,7 @@ export function BaseProviderForm({
                     <div className={styles.passwordField}>
                       <input
                         className={styles.passwordInput}
-                        type={showPasswords.has(realIdx) ? 'text' : 'password'}
+                        type="text"
                         value={entry.apiKey}
                         onChange={(e) =>
                           updateField(
